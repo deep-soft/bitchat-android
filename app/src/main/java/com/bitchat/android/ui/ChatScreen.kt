@@ -5,7 +5,6 @@ package com.bitchat.android.ui
 
 
 import androidx.compose.animation.*
-import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -51,12 +50,13 @@ fun ChatScreen(viewModel: ChatViewModel) {
     val hasUnreadPrivateMessages by viewModel.unreadPrivateMessages.collectAsStateWithLifecycle()
     val privateChats by viewModel.privateChats.collectAsStateWithLifecycle()
     val channelMessages by viewModel.channelMessages.collectAsStateWithLifecycle()
-    val showSidebar by viewModel.showSidebar.collectAsStateWithLifecycle()
     val showCommandSuggestions by viewModel.showCommandSuggestions.collectAsStateWithLifecycle()
     val commandSuggestions by viewModel.commandSuggestions.collectAsStateWithLifecycle()
     val showMentionSuggestions by viewModel.showMentionSuggestions.collectAsStateWithLifecycle()
     val mentionSuggestions by viewModel.mentionSuggestions.collectAsStateWithLifecycle()
     val showAppInfo by viewModel.showAppInfo.collectAsStateWithLifecycle()
+    val showMeshPeerListSheet by viewModel.showMeshPeerList.collectAsStateWithLifecycle()
+    val privateChatSheetPeer by viewModel.privateChatSheetPeer.collectAsStateWithLifecycle()
     val showVerificationSheet by viewModel.showVerificationSheet.collectAsStateWithLifecycle()
     val showSecurityVerificationSheet by viewModel.showSecurityVerificationSheet.collectAsStateWithLifecycle()
 
@@ -87,8 +87,8 @@ fun ChatScreen(viewModel: ChatViewModel) {
     val selectedLocationChannel by viewModel.selectedLocationChannel.collectAsStateWithLifecycle()
 
     // Determine what messages to show based on current context (unified timelines)
+    // Legacy private chat timeline removed - private chats now exclusively use PrivateChatSheet
     val displayMessages = when {
-        selectedPrivatePeer != null -> privateChats[selectedPrivatePeer] ?: emptyList()
         currentChannel != null -> channelMessages[currentChannel] ?: emptyList()
         else -> {
             val locationChannel = selectedLocationChannel
@@ -103,7 +103,6 @@ fun ChatScreen(viewModel: ChatViewModel) {
 
     // Determine whether to show media buttons (only hide in geohash location chats)
     val showMediaButtons = when {
-        selectedPrivatePeer != null -> true
         currentChannel != null -> true
         else -> selectedLocationChannel !is com.bitchat.android.geohash.ChannelID.Location
     }
@@ -233,7 +232,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
                         selection = TextRange(mentionText.length)
                     )
                 },
-                selectedPrivatePeer = selectedPrivatePeer,
+                selectedPrivatePeer = null,
                 currentChannel = currentChannel,
                 nickname = nickname,
                 colorScheme = colorScheme,
@@ -244,12 +243,12 @@ fun ChatScreen(viewModel: ChatViewModel) {
         // Floating header - positioned absolutely at top, ignores keyboard
         ChatFloatingHeader(
             headerHeight = headerHeight,
-            selectedPrivatePeer = selectedPrivatePeer,
+            selectedPrivatePeer = null,
             currentChannel = currentChannel,
             nickname = nickname,
             viewModel = viewModel,
             colorScheme = colorScheme,
-            onSidebarToggle = { viewModel.showSidebar() },
+            onSidebarToggle = { viewModel.showMeshPeerList() },
             onShowAppInfo = { viewModel.showAppInfo() },
             onPanicClear = { viewModel.panicClearAllData() },
             onLocationChannelsClick = { showLocationChannelsSheet = true },
@@ -266,28 +265,9 @@ fun ChatScreen(viewModel: ChatViewModel) {
             color = colorScheme.outline.copy(alpha = 0.3f)
         )
 
-        val alpha by animateFloatAsState(
-            targetValue = if (showSidebar) 0.5f else 0f,
-            animationSpec = tween(
-                durationMillis = 300,
-                easing = EaseOutCubic
-            ), label = "overlayAlpha"
-        )
-
-        // Only render the background if it's visible
-        if (alpha > 0f) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = alpha))
-                    .clickable { viewModel.hideSidebar() }
-                    .zIndex(1f)
-            )
-        }
-
         // Scroll-to-bottom floating button
         AnimatedVisibility(
-            visible = isScrolledUp && !showSidebar,
+            visible = isScrolledUp,
             enter = slideInVertically(initialOffsetY = { it / 2 }) + fadeIn(),
             exit = slideOutVertically(targetOffsetY = { it / 2 }) + fadeOut(),
             modifier = Modifier
@@ -312,29 +292,6 @@ fun ChatScreen(viewModel: ChatViewModel) {
                     )
                 }
             }
-        }
-
-        AnimatedVisibility(
-            visible = showSidebar,
-            enter = slideInHorizontally(
-                initialOffsetX = { it },
-                animationSpec = tween(300, easing = EaseOutCubic)
-            ) + fadeIn(animationSpec = tween(300)),
-            exit = slideOutHorizontally(
-                targetOffsetX = { it },
-                animationSpec = tween(250, easing = EaseInCubic)
-            ) + fadeOut(animationSpec = tween(250)),
-            modifier = Modifier.zIndex(2f)
-        ) {
-            SidebarOverlay(
-                viewModel = viewModel,
-                onDismiss = { viewModel.hideSidebar() },
-                onShowVerification = {
-                    viewModel.showVerificationSheet(fromSidebar = true)
-                    viewModel.hideSidebar()
-                },
-                modifier = Modifier.fillMaxSize()
-            )
         }
     }
 
@@ -383,12 +340,14 @@ fun ChatScreen(viewModel: ChatViewModel) {
         showVerificationSheet = showVerificationSheet,
         onVerificationSheetDismiss = viewModel::hideVerificationSheet,
         showSecurityVerificationSheet = showSecurityVerificationSheet,
-        onSecurityVerificationSheetDismiss = viewModel::hideSecurityVerificationSheet
+        onSecurityVerificationSheetDismiss = viewModel::hideSecurityVerificationSheet,
+        showMeshPeerListSheet = showMeshPeerListSheet,
+        onMeshPeerListDismiss = viewModel::hideMeshPeerList,
     )
 }
 
 @Composable
-private fun ChatInputSection(
+fun ChatInputSection(
     messageText: TextFieldValue,
     onMessageTextChange: (TextFieldValue) -> Unit,
     onSend: () -> Unit,
@@ -527,8 +486,12 @@ private fun ChatDialogs(
     showVerificationSheet: Boolean,
     onVerificationSheetDismiss: () -> Unit,
     showSecurityVerificationSheet: Boolean,
-    onSecurityVerificationSheetDismiss: () -> Unit
+    onSecurityVerificationSheetDismiss: () -> Unit,
+    showMeshPeerListSheet: Boolean,
+    onMeshPeerListDismiss: () -> Unit,
 ) {
+    val privateChatSheetPeer by viewModel.privateChatSheetPeer.collectAsStateWithLifecycle()
+
     // Password dialog
     PasswordPromptDialog(
         show = showPasswordDialog,
@@ -581,6 +544,18 @@ private fun ChatDialogs(
             viewModel = viewModel
         )
     }
+    // MeshPeerList sheet (network view)
+    if (showMeshPeerListSheet){
+        MeshPeerListSheet(
+            isPresented = showMeshPeerListSheet,
+            viewModel = viewModel,
+            onDismiss = onMeshPeerListDismiss,
+            onShowVerification = {
+                onMeshPeerListDismiss()
+                viewModel.showVerificationSheet(fromSidebar = true)
+            }
+        )
+    }
 
     if (showVerificationSheet) {
         VerificationSheet(
@@ -595,6 +570,18 @@ private fun ChatDialogs(
             isPresented = showSecurityVerificationSheet,
             onDismiss = onSecurityVerificationSheetDismiss,
             viewModel = viewModel
+        )
+    }
+
+    if (privateChatSheetPeer != null) {
+        PrivateChatSheet(
+            isPresented = true,
+            peerID = privateChatSheetPeer!!,
+            viewModel = viewModel,
+            onDismiss = {
+                viewModel.hidePrivateChatSheet()
+                viewModel.endPrivateChat()
+            }
         )
     }
 }
